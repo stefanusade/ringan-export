@@ -92,6 +92,7 @@ function ringan_export_enqueue_assets(string $hook): void
             'done' => __('Ekspor selesai. Unduh ZIP lalu unggah di Ringan CMS (Tools → Import ZIP).', 'ringan-export'),
             'failed' => __('Ekspor gagal.', 'ringan-export'),
             'stalled' => __('Ekspor berhenti karena tidak ada kemajuan. Coba kurangi jumlah post atau periksa log server.', 'ringan-export'),
+            'emptyZip' => __('Server melaporkan ZIP kosong (0 byte). Jalankan ekspor ulang dan periksa log server.', 'ringan-export'),
             'confirmCancel' => __('Batalkan sesi ekspor dan hapus file sementara?', 'ringan-export'),
         ],
     ]);
@@ -486,8 +487,53 @@ function ringan_export_render_page(): void
                 <?php esc_html_e('Repeater/flexible content ACF belum dipetakan otomatis karena CMS belum memiliki tipe field tersebut.', 'ringan-export'); ?>
             </p>
         </div>
+
+        <details class="ringan-export-diagnostics">
+            <summary><?php esc_html_e('Diagnostik server', 'ringan-export'); ?></summary>
+            <table class="widefat striped">
+                <tbody>
+                <?php foreach (ringan_export_diagnostics() as $label => $value): ?>
+                    <tr>
+                        <th scope="row"><?php echo esc_html($label); ?></th>
+                        <td><code><?php echo esc_html($value); ?></code></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <p class="description">
+                <?php esc_html_e('Bila ZIP terunduh 0 byte, pastikan zlib.output_compression Off dan folder temporary dapat ditulis. Detail kegagalan unduhan dicatat di log PHP dengan awalan [ringan-export].', 'ringan-export'); ?>
+            </p>
+        </details>
     </div>
     <?php
+}
+
+/**
+ * Ringkasan setelan server yang memengaruhi ekspor/unduhan ZIP.
+ *
+ * @return array<string,string>
+ */
+function ringan_export_diagnostics(): array
+{
+    $temp_dir = rtrim((string) get_temp_dir(), '/\\');
+    $writable = $temp_dir !== '' && is_dir($temp_dir) && wp_is_writable($temp_dir);
+    $zlib = (string) ini_get('zlib.output_compression');
+    if ($zlib === '') {
+        $zlib = '0';
+    }
+
+    return [
+        __('PHP', 'ringan-export') => PHP_VERSION,
+        __('WordPress', 'ringan-export') => (string) get_bloginfo('version'),
+        __('ZipArchive (ext-zip)', 'ringan-export') => class_exists('ZipArchive') ? __('aktif', 'ringan-export') : __('TIDAK AKTIF', 'ringan-export'),
+        __('Folder temporary', 'ringan-export') => $temp_dir . ($writable ? ' (' . __('dapat ditulis', 'ringan-export') . ')' : ' (' . __('TIDAK dapat ditulis', 'ringan-export') . ')'),
+        __('zlib.output_compression', 'ringan-export') => $zlib === '0' || strtolower($zlib) === 'off' ? $zlib : $zlib . ' (' . __('bisa membuat unduhan ZIP 0 byte', 'ringan-export') . ')',
+        __('output_buffering', 'ringan-export') => (string) (ini_get('output_buffering') ?: '0'),
+        __('memory_limit', 'ringan-export') => (string) ini_get('memory_limit'),
+        __('max_execution_time', 'ringan-export') => (string) ini_get('max_execution_time'),
+        __('Batas post per ekspor', 'ringan-export') => (string) RINGAN_EXPORT_MAX_POSTS,
+        __('Batas media per ekspor', 'ringan-export') => (string) RINGAN_EXPORT_MAX_MEDIA_FILES,
+    ];
 }
 
 /**

@@ -72,8 +72,17 @@ media/<hash>.<ext>     # hanya media yang dipakai entry
   memiliki tipe field tersebut.
 - Ekspor membutuhkan `ZipArchive`; bila ekstensi tidak aktif, halaman plugin
   menampilkan peringatan dan ekspor dinonaktifkan.
-- File sementara di direktori temp WordPress dihapus setelah ZIP diunduh,
-  dibatalkan, atau otomatis setelah 24 jam.
+- File sementara di direktori temp WordPress dihapus saat sesi dibatalkan atau
+  otomatis setelah 24 jam. ZIP tetap bisa diunduh berulang selama sesi masih ada
+  (job disimpan 6 jam); bila file sementaranya hilang atau tidak lengkap, ZIP
+  dibangun ulang otomatis saat diunduh.
+- ZIP dibangun ke file `.part` lalu dipindahkan setelah verifikasi lolos, dan
+  unduhan hanya menyajikan arsip yang memuat `manifest.json` — ZIP separuh jadi
+  tidak akan terunduh seolah lengkap.
+- Unduhan ZIP memakai streaming dengan `Content-Length` yang pasti. Bila hosting
+  memaksa kompresi output (`zlib.output_compression`), plugin mematikannya saat
+  streaming — kalau tetap 0 byte, periksa panel **Diagnostik server** di halaman
+  plugin.
 
 ## Keamanan
 

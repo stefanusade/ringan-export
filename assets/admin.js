@@ -192,6 +192,10 @@
         if (cancelBtn) {
           cancelBtn.hidden = true;
         }
+        if (!data.download_url || Number(data.size) <= 0) {
+          // Jangan tampilkan tautan bila server melaporkan ZIP kosong.
+          throw new Error(cfg.strings.emptyZip || cfg.strings.failed);
+        }
         if (downloadLink) {
           downloadLink.href = data.download_url;
         }

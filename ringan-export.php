@@ -3,7 +3,7 @@
  * Plugin Name:       Ringan Export
  * Plugin URI:        https://github.com/stefanusade/ringan-export
  * Description:       Ekspor post/CPT WordPress beserta seluruh field ACF dan media ke satu file ZIP sesuai profil JSON dari Ringan CMS.
- * Version:           1.0.0
+ * Version:           1.0.1
  * Requires at least: 6.0
  * Requires PHP:      8.0
  * Author:            Ringan CMS
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('RINGAN_EXPORT_VERSION', '1.0.0');
+define('RINGAN_EXPORT_VERSION', '1.0.1');
 define('RINGAN_EXPORT_FILE', __FILE__);
 define('RINGAN_EXPORT_DIR', plugin_dir_path(__FILE__));
 define('RINGAN_EXPORT_URL', plugin_dir_url(__FILE__));

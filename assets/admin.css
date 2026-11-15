@@ -99,3 +99,20 @@
   list-style: disc;
   margin-left: 18px;
 }
+
+.ringan-export-diagnostics {
+  margin: 16px 0;
+  background: #fff;
+  border: 1px solid #dcdcde;
+  border-radius: 6px;
+  padding: 10px 16px;
+}
+
+.ringan-export-diagnostics summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ringan-export-diagnostics table {
+  margin-top: 10px;
+}

@@ -76,7 +76,20 @@ function ringan_export_job_get(string $token): ?array
 
 function ringan_export_job_save(string $token, array $job): void
 {
-    set_transient(ringan_export_job_key($token), $job, HOUR_IN_SECONDS);
+    // Job yang sudah selesai disimpan lebih lama supaya ZIP masih bisa diunduh
+    // ulang bila unduhan pertama gagal di sisi browser.
+    $ttl = !empty($job['finished']) ? 6 * HOUR_IN_SECONDS : 2 * HOUR_IN_SECONDS;
+    set_transient(ringan_export_job_key($token), $job, $ttl);
+}
+
+/**
+ * Catat pesan diagnostik plugin ke log server (tanpa menampilkan ke user).
+ */
+function ringan_export_log(string $message): void
+{
+    if (function_exists('error_log')) {
+        error_log('[ringan-export] ' . $message);
+    }
 }
 
 function ringan_export_job_delete(string $token, array $job): void
@@ -85,6 +98,9 @@ function ringan_export_job_delete(string $token, array $job): void
         if (!empty($job[$key]) && is_string($job[$key]) && is_file($job[$key])) {
             @unlink($job[$key]);
         }
+    }
+    if (!empty($job['zip_path']) && is_string($job['zip_path']) && is_file($job['zip_path'] . '.part')) {
+        @unlink($job['zip_path'] . '.part');
     }
     delete_transient(ringan_export_job_key($token));
 }
@@ -833,34 +849,32 @@ function ringan_export_download_url(string $token): string
 }
 
 /**
- * Susun manifest.json + media ke ZIP, siap diunduh.
+ * Susun manifest.json + media menjadi file ZIP.
  *
- * @return array{ok:bool,error?:string,download_url?:string,size?:int,stats?:array}
+ * Dipakai oleh ringan_export_finalize() dan oleh handler unduh untuk
+ * membangun ulang ZIP bila file sementara terhapus (mis. pembersih /tmp).
+ *
+ * @param array<string,mixed> $job
+ * @return array{ok:bool,error?:string,size?:int,media_index?:array<string,array{name:string,mime:string,size:int}>}
  */
-function ringan_export_finalize(string $token, int $user_id): array
+function ringan_export_build_archive(string $token, array $job, array $profile, array &$warnings): array
 {
-    $job = ringan_export_job_get($token);
-    if ($job === null || (int) ($job['user_id'] ?? 0) !== $user_id) {
-        return ['ok' => false, 'error' => 'Sesi ekspor tidak ditemukan. Mulai ulang ekspor.'];
+    $zip_path = (string) ($job['zip_path'] ?? '');
+    if ($zip_path === '') {
+        return ['ok' => false, 'error' => 'File ZIP sementara tidak tersedia.'];
     }
-    if (!empty($job['finished'])) {
-        $zip_path = (string) ($job['zip_path'] ?? '');
-        if ($zip_path !== '' && is_file($zip_path)) {
-            return [
-                'ok' => true,
-                'download_url' => ringan_export_download_url($token),
-                'size' => (int) ($job['zip_size'] ?? filesize($zip_path)),
-                'stats' => (array) ($job['stats'] ?? []),
-            ];
-        }
-        return ['ok' => false, 'error' => 'ZIP hasil ekspor sudah diunduh/dihapus. Mulai ekspor baru.'];
+    // Arsip dibangun di file .part lalu dipindahkan setelah lolos verifikasi.
+    // Tanpa ini, kegagalan di tengah proses (fatal error, batas waktu) bisa
+    // meninggalkan ZIP separuh jadi yang tetap > 0 byte dan terunduh seolah
+    // lengkap — manifest/entry hilang tanpa pesan error.
+    $build_path = $zip_path . '.part';
+    if (is_file($build_path)) {
+        @unlink($build_path);
     }
-    $profile = (array) ($job['profile'] ?? []);
     $media = ringan_export_read_media((string) $job['media_path']);
-    $warnings = (array) ($job['stats']['warnings'] ?? []);
 
     $zip = new ZipArchive();
-    if ($zip->open((string) $job['zip_path'], ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+    if ($zip->open($build_path, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
         return ['ok' => false, 'error' => 'Gagal membuat arsip ZIP di server.'];
     }
 
@@ -886,7 +900,7 @@ function ringan_export_finalize(string $token, int $user_id): array
     }
     if ($failed !== []) {
         $zip->close();
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return [
             'ok' => false,
             'error' => 'Sebagian media gagal ditambahkan ke ZIP: ' . implode(', ', array_slice($failed, 0, 5))
@@ -898,7 +912,7 @@ function ringan_export_finalize(string $token, int $user_id): array
     $handle = @fopen($manifest_path, 'wb');
     if ($handle === false) {
         $zip->close();
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return ['ok' => false, 'error' => 'Gagal menulis manifest ekspor.'];
     }
 
@@ -921,7 +935,7 @@ function ringan_export_finalize(string $token, int $user_id): array
         fclose($handle);
         @unlink($manifest_path);
         $zip->close();
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return ['ok' => false, 'error' => 'Gagal menyusun manifest ekspor.'];
     }
     fwrite($handle, substr($head_json, 0, -1) . ',"entries":[');
@@ -931,7 +945,7 @@ function ringan_export_finalize(string $token, int $user_id): array
         fclose($handle);
         @unlink($manifest_path);
         $zip->close();
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return ['ok' => false, 'error' => 'File entry sementara tidak ditemukan.'];
     }
     $first = true;
@@ -956,31 +970,32 @@ function ringan_export_finalize(string $token, int $user_id): array
     if ($entries_written === 0) {
         @unlink($manifest_path);
         $zip->close();
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return ['ok' => false, 'error' => 'Tidak ada entry yang berhasil diekspor.'];
     }
 
     if (!$zip->addFile($manifest_path, 'manifest.json')) {
         @unlink($manifest_path);
         $zip->close();
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return ['ok' => false, 'error' => 'Gagal menambahkan manifest.json ke ZIP.'];
     }
     $zip->close();
     @unlink($manifest_path);
-    @unlink((string) $job['entries_path']);
+    // File entry sengaja dipertahankan supaya ZIP bisa dibangun ulang bila
+    // file sementaranya hilang sebelum sempat diunduh.
 
-    clearstatcache(true, (string) $job['zip_path']);
-    $size = is_file((string) $job['zip_path']) ? (int) filesize((string) $job['zip_path']) : 0;
+    clearstatcache(true, $build_path);
+    $size = is_file($build_path) ? (int) filesize($build_path) : 0;
     if ($size <= 0) {
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return ['ok' => false, 'error' => 'ZIP hasil ekspor kosong atau gagal dibuat.'];
     }
 
     // Verifikasi arsip dapat dibuka kembali dan semua media benar-benar tertulis.
     $verify = new ZipArchive();
-    if ($verify->open((string) $job['zip_path']) !== true) {
-        @unlink((string) $job['zip_path']);
+    if ($verify->open($build_path) !== true) {
+        @unlink($build_path);
         return ['ok' => false, 'error' => 'ZIP hasil ekspor tidak dapat dibuka kembali.'];
     }
     $missing = [];
@@ -996,7 +1011,7 @@ function ringan_export_finalize(string $token, int $user_id): array
     $verify->close();
     if ($missing !== []) {
         // Jangan biarkan ZIP tanpa media: entry akan menunjuk file yang tidak ada.
-        @unlink((string) $job['zip_path']);
+        @unlink($build_path);
         return [
             'ok' => false,
             'error' => 'ZIP tidak lengkap, sebagian media gagal ditulis: ' . implode(', ', array_slice($missing, 0, 5))
@@ -1004,26 +1019,166 @@ function ringan_export_finalize(string $token, int $user_id): array
         ];
     }
 
+    // Arsip lolos verifikasi: pindahkan menimpa file lama secara atomik.
+    if (!@rename($build_path, $zip_path)) {
+        @unlink($build_path);
+        return ['ok' => false, 'error' => 'Gagal menyimpan arsip ZIP hasil ekspor.'];
+    }
+    clearstatcache(true, $zip_path);
+    $size = (int) filesize($zip_path);
+
+    return [
+        'ok' => true,
+        'size' => $size,
+        'media_index' => $media_index,
+    ];
+}
+
+/**
+ * Tahap akhir ekspor: bangun ZIP lalu tandai job selesai.
+ *
+ * @return array{ok:bool,error?:string,download_url?:string,size?:int,stats?:array}
+ */
+function ringan_export_finalize(string $token, int $user_id): array
+{
+    $job = ringan_export_job_get($token);
+    if ($job === null || (int) ($job['user_id'] ?? 0) !== $user_id) {
+        return ['ok' => false, 'error' => 'Sesi ekspor tidak ditemukan. Mulai ulang ekspor.'];
+    }
+
+    $zip_path = (string) ($job['zip_path'] ?? '');
+    if (!empty($job['finished']) && ringan_export_archive_is_valid($zip_path)) {
+        return [
+            'ok' => true,
+            'download_url' => ringan_export_download_url($token),
+            'size' => (int) filesize($zip_path),
+            'stats' => (array) ($job['stats'] ?? []),
+        ];
+    }
+
+    $profile = (array) ($job['profile'] ?? []);
+    $warnings = (array) ($job['stats']['warnings'] ?? []);
+    $built = ringan_export_build_archive($token, $job, $profile, $warnings);
+    if (!$built['ok']) {
+        return ['ok' => false, 'error' => (string) ($built['error'] ?? 'Gagal menyusun ZIP.')];
+    }
+
     $stats = (array) ($job['stats'] ?? []);
-    $stats['media'] = count($media_index);
+    $stats['media'] = count((array) ($built['media_index'] ?? []));
     $stats['warnings'] = array_slice(array_values(array_unique($warnings)), 0, 100);
     $job['stats'] = $stats;
     $job['finished'] = true;
     $job['finished_at'] = time();
-    $job['zip_size'] = $size;
+    $job['zip_size'] = (int) $built['size'];
     ringan_export_job_save($token, $job);
 
-    $download_url = ringan_export_download_url($token);
-
-    return ['ok' => true, 'download_url' => $download_url, 'size' => $size, 'stats' => $stats];
+    return [
+        'ok' => true,
+        'download_url' => ringan_export_download_url($token),
+        'size' => (int) $built['size'],
+        'stats' => $stats,
+    ];
 }
 
 /**
- * Unduh ZIP hasil ekspor lalu bersihkan file sementara.
+ * Cek apakah file benar-benar arsip ekspor yang lengkap.
+ *
+ * Ukuran > 0 saja tidak cukup: ZIP parsial dari proses yang terhenti juga
+ * > 0 byte. Arsip dianggap sah hanya bila bisa dibuka dan manifest.json
+ * terbaca utuh (CRC-nya ikut diverifikasi oleh ZipArchive).
+ */
+function ringan_export_archive_is_valid(string $path): bool
+{
+    if ($path === '' || !is_file($path) || !is_readable($path)) {
+        return false;
+    }
+    clearstatcache(true, $path);
+    if ((int) filesize($path) <= 0) {
+        return false;
+    }
+    $zip = new ZipArchive();
+    if (@$zip->open($path) !== true) {
+        return false;
+    }
+    $manifest = @$zip->getFromName('manifest.json');
+    $zip->close();
+
+    return is_string($manifest) && $manifest !== '';
+}
+
+/**
+ * Kirim file ke browser apa adanya.
+ *
+ * Content-Length wajib sama persis dengan byte yang dikirim. Bila plugin lain
+ * meninggalkan output buffer, atau PHP/hosting menyalakan
+ * `zlib.output_compression`, browser menerima body terkompresi dengan
+ * Content-Length ukuran asli sehingga unduhan gagal dan file tersimpan 0 byte.
+ * Karena itu buffer dibersihkan dan kompresi dimatikan sebelum streaming.
+ */
+function ringan_export_stream_file(string $path, string $filename): bool
+{
+    $handle = @fopen($path, 'rb');
+    if ($handle === false) {
+        ringan_export_log('Gagal membuka file untuk diunduh: ' . $path);
+        return false;
+    }
+
+    for ($i = 0; $i < 10 && ob_get_level() > 0; $i++) {
+        if (!@ob_end_clean()) {
+            break;
+        }
+    }
+    @ini_set('zlib.output_compression', '0');
+    @ini_set('output_buffering', '0');
+    @set_time_limit(0);
+
+    $size = (int) filesize($path);
+    if (headers_sent()) {
+        // Sudah ada output dari plugin/tema lain: header tidak bisa diubah,
+        // tetap kirim isi file agar tidak menghasilkan unduhan kosong.
+        ringan_export_log('Header sudah terkirim sebelum streaming ZIP; Content-Length tidak bisa diset.');
+    } else {
+        nocache_headers();
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Content-Length: ' . (string) $size);
+        header('X-Content-Type-Options: nosniff');
+        header('X-Accel-Buffering: no'); // nginx: jangan buffer file besar
+    }
+
+    $sent = 0;
+    while (!feof($handle)) {
+        $chunk = fread($handle, 1048576);
+        if ($chunk === false) {
+            break;
+        }
+        if ($chunk === '') {
+            continue;
+        }
+        echo $chunk;
+        $sent += strlen($chunk);
+        @flush();
+    }
+    fclose($handle);
+
+    if ($size > 0 && $sent !== $size) {
+        ringan_export_log(sprintf('ZIP terkirim tidak utuh: %d dari %d byte (%s).', $sent, $size, $path));
+        return false;
+    }
+
+    return $sent > 0;
+}
+
+/**
+ * Unduh ZIP hasil ekspor.
+ *
+ * ZIP tidak dihapus di sini agar unduhan bisa diulang bila browser/server
+ * gagal; pembersihan dilakukan saat sesi dibatalkan atau oleh
+ * ringan_export_cleanup_stale_files() setelah 24 jam.
  */
 function ringan_export_handle_download(): void
 {
-    if (!current_user_can('manage_options')) {
+    if (!current_user_can(ringan_export_capability())) {
         wp_die(esc_html__('Anda tidak memiliki akses.', 'ringan-export'), 403);
     }
     $token = isset($_GET['token']) ? sanitize_text_field(wp_unslash((string) $_GET['token'])) : '';
@@ -1034,23 +1189,71 @@ function ringan_export_handle_download(): void
         wp_die(esc_html__('Sesi ekspor tidak ditemukan atau sudah kedaluwarsa.', 'ringan-export'), 404);
     }
     $zip_path = (string) ($job['zip_path'] ?? '');
-    if ($zip_path === '' || !is_file($zip_path) || !is_readable($zip_path)) {
+    if ($zip_path === '') {
         wp_die(esc_html__('File ZIP sudah tidak tersedia. Silakan ekspor ulang.', 'ringan-export'), 404);
+    }
+
+    if (!ringan_export_archive_is_valid($zip_path)) {
+        // File sementara bisa hilang (pembersih /tmp, restart, atau disk penuh),
+        // atau tertinggal separuh jadi dari proses yang terhenti. Bangun ulang
+        // dari file entry yang disimpan job sebelum menyerah.
+        ringan_export_log('ZIP tidak valid/tidak lengkap saat unduh, membangun ulang: ' . $zip_path);
+        $warnings = (array) ($job['stats']['warnings'] ?? []);
+        $built = ringan_export_build_archive($token, $job, (array) ($job['profile'] ?? []), $warnings);
+        if (!$built['ok']) {
+            ringan_export_log('ZIP tidak valid dan gagal dibangun ulang: ' . (string) ($built['error'] ?? ''));
+            wp_die(
+                esc_html__(
+                    'File ZIP tidak tersedia dan gagal dibangun ulang. Jalankan ekspor ulang; bila berulang, periksa ruang disk dan folder temporary server.',
+                    'ringan-export'
+                ),
+                500
+            );
+        }
+        $job['zip_size'] = (int) $built['size'];
+        ringan_export_job_save($token, $job);
+        if (!ringan_export_archive_is_valid($zip_path)) {
+            ringan_export_log('ZIP masih tidak valid setelah dibangun ulang: ' . $zip_path);
+            wp_die(esc_html__('File ZIP kosong (0 byte) sehingga tidak bisa diunduh.', 'ringan-export'), 500);
+        }
+    }
+
+    clearstatcache(true, $zip_path);
+    $size = (int) filesize($zip_path);
+    if (!is_readable($zip_path)) {
+        ringan_export_log('ZIP tidak bisa dibaca proses PHP: ' . $zip_path);
+        wp_die(esc_html__('File ZIP tidak dapat dibaca server. Periksa izin file di folder temporary.', 'ringan-export'), 500);
+    }
+
+    $expected = (int) ($job['zip_size'] ?? 0);
+    if ($expected > 0 && $expected !== $size) {
+        ringan_export_log(sprintf('Ukuran ZIP berubah saat unduh: %d -> %d (%s).', $expected, $size, $zip_path));
     }
 
     $slug = (string) ($job['profile']['content_type']['slug'] ?? 'export');
     $slug = preg_replace('/[^a-z0-9_-]/', '-', strtolower($slug)) ?: 'export';
     $filename = 'ringan-export-' . $slug . '-' . gmdate('Ymd-His') . '.zip';
 
-    nocache_headers();
-    header('Content-Type: application/zip');
-    header('Content-Disposition: attachment; filename="' . $filename . '"');
-    header('Content-Length: ' . (string) filesize($zip_path));
-    header('X-Content-Type-Options: nosniff');
+    $job['downloaded_at'] = time();
+    ringan_export_job_save($token, $job);
 
-    @set_time_limit(0);
-    readfile($zip_path);
-    ringan_export_job_delete($token, $job);
+    // Cek file bisa dibuka SEBELUM header dikirim: bila fopen() diblokir
+    // hosting (disable_functions/open_basedir), user harus melihat pesan jelas,
+    // bukan unduhan 0 byte.
+    $probe = @fopen($zip_path, 'rb');
+    if ($probe === false) {
+        ringan_export_log('ZIP tidak bisa dibuka untuk diunduh: ' . $zip_path);
+        wp_die(
+            esc_html__(
+                'Server tidak mengizinkan file ZIP dibaca untuk diunduh. Periksa open_basedir/disable_functions di hosting.',
+                'ringan-export'
+            ),
+            500
+        );
+    }
+    fclose($probe);
+
+    ringan_export_stream_file($zip_path, $filename);
     exit;
 }
 

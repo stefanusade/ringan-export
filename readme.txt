@@ -4,7 +4,7 @@ Tags: export, acf, migration, headless, zip
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -64,6 +64,23 @@ Fitur:
   duplikasi.
 
 == Changelog ==
+
+= 1.0.1 =
+* Perbaikan: ZIP terunduh 0 byte. Unduhan kini membersihkan output buffer dan
+  mematikan `zlib.output_compression` sebelum streaming, serta mengirim isi file
+  per potongan (bukan `readfile()`), sehingga `Content-Length` selalu cocok
+  dengan byte yang dikirim.
+* ZIP tidak lagi dihapus tepat setelah diunduh: unduhan bisa diulang selama sesi
+  masih ada (job disimpan 6 jam), dan bila file sementara hilang atau tidak
+  lengkap ZIP dibangun ulang otomatis dari data job.
+* ZIP dibangun ke file `.part` lalu dipindahkan setelah lolos verifikasi, dan
+  unduhan menolak arsip yang tidak memuat `manifest.json` — jadi ZIP separuh
+  jadi tidak mungkin lagi terunduh seolah lengkap.
+* Jika ZIP benar-benar kosong/tidak terbaca, halaman menampilkan pesan error
+  yang jelas (bukan tautan unduhan 0 byte) dan detailnya dicatat di log PHP
+  dengan awalan `[ringan-export]`.
+* Panel **Diagnostik server** di halaman plugin: versi PHP/WordPress, status
+  `ZipArchive`, folder temporary, `zlib.output_compression`, dan batas ekspor.
 
 = 1.0.0 =
 * Rilis awal: ekspor post/CPT + ACF + media ke ZIP sesuai profil Ringan CMS.
