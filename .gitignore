@@ -1,0 +1,11 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Arsip rilis dibuat lewat GitHub Releases / git archive, tidak di-commit.
+*.zip
+*.tar.gz
