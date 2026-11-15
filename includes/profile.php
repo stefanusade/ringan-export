@@ -228,6 +228,23 @@ function ringan_export_profile_normalize(array $raw): array
                     ? !empty($options_in['include_content_media'])
                     : true,
                 'media_max_bytes' => $media_max_bytes,
+                // Opsi pembersihan konten (dipakai includes/clean.php).
+                'clean_html' => array_key_exists('clean_html', $options_in)
+                    ? !empty($options_in['clean_html'])
+                    : true,
+                'clean_shortcodes' => array_key_exists('clean_shortcodes', $options_in)
+                    ? !empty($options_in['clean_shortcodes'])
+                    : true,
+                'strip_attributes' => array_key_exists('strip_attributes', $options_in)
+                    ? !empty($options_in['strip_attributes'])
+                    : true,
+                'absolute_urls' => array_key_exists('absolute_urls', $options_in)
+                    ? !empty($options_in['absolute_urls'])
+                    : true,
+                // Diteruskan dari CMS agar perilaku duplikat tidak berubah.
+                'duplicates' => in_array((string) ($options_in['duplicates'] ?? 'skip'), ['skip', 'update', 'duplicate'], true)
+                    ? (string) ($options_in['duplicates'] ?? 'skip')
+                    : 'skip',
             ],
             'fields' => $fields,
         ],

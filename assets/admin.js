@@ -212,6 +212,16 @@
         (stats.warnings || []).slice(0, 10).forEach(function (warning) {
           log('Peringatan: ' + warning, 'warn');
         });
+        var fieldStats = stats.fields || {};
+        Object.keys(fieldStats).slice(0, 20).forEach(function (key) {
+          var item = fieldStats[key] || {};
+          var filled = Number(item.filled) || 0;
+          var empty = Number(item.empty) || 0;
+          if (filled + empty === 0) {
+            return;
+          }
+          log('Field ' + key + ': ' + filled + '/' + (filled + empty) + ' terisi.', empty > 0 ? 'warn' : 'info');
+        });
         if (startBtn) {
           startBtn.disabled = false;
         }
@@ -244,5 +254,81 @@
     event.preventDefault();
     event.returnValue = '';
     return '';
+  });
+})();
+
+/**
+ * Pratinjau pemetaan: tampilkan 1 entry hasil pembersihan tanpa ekspor penuh.
+ */
+(function () {
+  'use strict';
+
+  var cfg = window.RinganExport;
+  var button = document.getElementById('ringan-export-preview');
+  var out = document.getElementById('ringan-export-preview-out');
+  if (!cfg || !button || !out) {
+    return;
+  }
+
+  button.addEventListener('click', function () {
+    var body = new URLSearchParams();
+    body.set('action', 'ringan_export_preview');
+    body.set('nonce', cfg.nonce);
+    (cfg.previewPostTypes || []).forEach(function (value) {
+      body.append('post_types[]', String(value));
+    });
+    (cfg.previewStatuses || []).forEach(function (value) {
+      body.append('post_statuses[]', String(value));
+    });
+
+    button.disabled = true;
+    out.hidden = false;
+    out.textContent = cfg.strings.previewLoading;
+
+    fetch(cfg.ajaxUrl, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: body.toString()
+    })
+      .then(function (response) {
+        return response.json();
+      })
+      .then(function (json) {
+        if (!json || !json.success) {
+          var message = json && json.data && json.data.message ? json.data.message : cfg.strings.previewFailed;
+          throw new Error(message);
+        }
+        var data = json.data;
+        if (!data.entry) {
+          out.textContent = cfg.strings.previewEmpty;
+          return;
+        }
+        var lines = [];
+        var stats = data.fields || {};
+        var filled = Object.keys(stats).map(function (key) {
+          var item = stats[key] || {};
+          return key + ' ' + (Number(item.filled) || 0) + '/' + ((Number(item.filled) || 0) + (Number(item.empty) || 0));
+        });
+        if (filled.length) {
+          lines.push(cfg.strings.previewFields + ': ' + filled.join(', '));
+          lines.push('');
+        }
+        if (data.media) {
+          lines.push('Media terpakai di post ini: ' + data.media);
+          lines.push('');
+        }
+        (data.warnings || []).forEach(function (warning) {
+          lines.push('Peringatan: ' + warning);
+        });
+        lines.push(JSON.stringify(data.entry, null, 2));
+        out.textContent = lines.join('\n');
+      })
+      .catch(function (error) {
+        out.textContent = error.message;
+      })
+      .then(function () {
+        button.disabled = false;
+      });
   });
 })();

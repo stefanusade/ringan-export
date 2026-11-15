@@ -13,6 +13,11 @@ akses database WordPress dari sisi CMS.
 - **Profil dari CMS**: tempel JSON dari **Content Types → Profil** di Ringan CMS,
   atau ambil langsung dari `GET /api/v1/{slug}/profile` (opsional dengan
   `X-API-Key`).
+- **Pemetaan otomatis**: setiap field CMS dicocokkan dengan field ACF/`post.*`
+  yang benar (nama, label, tipe), ditampilkan di tabel yang bisa diubah manual.
+- **Pembersihan konten**: blok Gutenberg, shortcode, atribut tema, tag kosong,
+  dan URL relatif dirapikan sebelum masuk ZIP (bisa dimatikan per opsi).
+- **Pratinjau 1 post** sebelum ekspor penuh, plus statistik per field.
 - **Pemetaan field**: `post.title`, `post.content`, `post.excerpt`, `post.slug`,
   `post.date`, `post.modified`, `post.status`, `post.author`,
   `post.thumbnail`, atau `acf.<key>`.
@@ -46,10 +51,48 @@ akses database WordPress dari sisi CMS.
 2. Di WordPress: buka **Tools → Ringan Export**, tempel JSON tersebut (atau isi
    URL `https://cms.example.com/api/v1/<slug>/profile` + `X-API-Key` bila perlu),
    lalu klik **Simpan & Validasi Profil**.
-3. Pilih post type dan status yang akan diekspor, klik **Mulai Ekspor**, tunggu
+3. Periksa tabel **Pemetaan field**: plugin otomatis mencocokkan setiap field CMS
+   dengan field ACF/`post.*` yang benar. Ubah dropdown bila ada yang keliru, atur
+   opsi pembersihan konten, lalu klik **Simpan Pemetaan**.
+4. Klik **Pratinjau 1 post** untuk melihat entry JSON hasil pemetaan + pembersihan
+   sebelum ekspor penuh.
+5. Pilih post type dan status yang akan diekspor, klik **Mulai Ekspor**, tunggu
    sampai selesai, lalu unduh ZIP.
-4. Di Ringan CMS: buka **Tools → Import ZIP**, unggah ZIP tersebut, periksa
+6. Di Ringan CMS: buka **Tools → Import ZIP**, unggah ZIP tersebut, periksa
    pratinjau, dan jalankan import.
+
+## Pemetaan field
+
+Profil dari CMS hanya membawa tebakan sumber. Plugin mencocokkan ulang setiap
+field CMS dengan sumber yang benar-benar ada di situs:
+
+1. Sumber yang sudah ada di profil dipertahankan (`post.*` atau ACF yang terdeteksi).
+2. Sumber `acf.*` yang tidak ditemukan dicocokkan berdasarkan nama, label, dan
+   tipe field (mis. `judul` → `post.title`, `konten` → `post.content`,
+   `gambar_utama` → `post.thumbnail`).
+3. Bila tidak ada padanan yang yakin, sumber lama dipertahankan dan ditandai
+   **tidak terdeteksi** (nilainya tetap dibaca dari post meta), atau **belum
+   dipetakan** bila memang tidak ada sumbernya.
+
+Status di tabel: **otomatis** (yakin), **perkiraan** (mohon dicek),
+**tetap** (sumber sudah valid), **manual** (dipilih user), **tidak terdeteksi**.
+
+## Pembersihan konten
+
+Saat ekspor, konten WordPress dibersihkan agar tidak membawa sisa tema/plugin:
+
+- Komentar HTML termasuk penanda blok Gutenberg (`<!-- wp:paragraph -->`).
+- Shortcode: `[caption]` mempertahankan isinya, `[embed]` menjadi tautan,
+  `[gallery]`/`[video]`/`[audio]`/shortcode lain dibuang.
+- Atribut tema: `class`, `id`, `style`, `srcset`, `sizes`, `loading`, `data-*`,
+  event handler; atribut yang berguna (`href`, `src`, `alt`, `width`, `height`,
+  `colspan`, `title`, `rel`) dipertahankan.
+- Tag kosong, `&nbsp;` berlebih, dan `<br>` berturut-turut.
+- URL relatif diubah menjadi absolut sehingga gambar di konten ikut dipetakan
+  menjadi media di ZIP.
+- `<iframe>` diubah menjadi tautan (CMS tidak merender iframe).
+
+Setiap opsi bisa dimatikan lewat checkbox di kartu pemetaan.
 
 ## Format ZIP
 

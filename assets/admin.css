@@ -116,3 +116,75 @@
 .ringan-export-diagnostics table {
   margin-top: 10px;
 }
+
+/* Pemetaan field */
+.ringan-export-mapping-table select {
+  max-width: 100%;
+  min-width: 220px;
+}
+
+.ringan-export-mapping-label {
+  color: #646970;
+  font-size: 11px;
+}
+
+.ringan-export-mapping-reason {
+  color: #646970;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.ringan-export-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #f0f0f1;
+  color: #3c434a;
+  white-space: nowrap;
+}
+
+.ringan-export-status.is-auto,
+.ringan-export-status.is-kept {
+  background: #edfaef;
+  color: #007017;
+}
+
+.ringan-export-status.is-guess {
+  background: #fcf9e8;
+  color: #94660c;
+}
+
+.ringan-export-status.is-missing,
+.ringan-export-status.is-none {
+  background: #fcf0f1;
+  color: #b32d2e;
+}
+
+.ringan-export-mapping-warnings {
+  margin: 8px 0 16px;
+}
+
+.ringan-export-mapping-warnings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ringan-export-inline-form {
+  display: inline-block;
+  margin: 0 0 8px;
+}
+
+.ringan-export-preview {
+  max-height: 320px;
+  overflow: auto;
+  background: #f6f7f7;
+  border: 1px solid #dcdcde;
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

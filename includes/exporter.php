@@ -241,7 +241,10 @@ function ringan_export_file_mime(string $path): string
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
         if ($finfo !== false) {
             $mime = finfo_file($finfo, $path);
-            finfo_close($finfo);
+            // finfo_close() deprecated sejak PHP 8.5 (objek dibebaskan otomatis).
+            if (PHP_VERSION_ID < 80500) {
+                finfo_close($finfo);
+            }
             if (is_string($mime) && $mime !== '') {
                 return strtolower($mime);
             }
@@ -550,6 +553,13 @@ function ringan_export_transform_value(
             if ($html === '') {
                 return null;
             }
+            // Konten WordPress dibersihkan dulu (komentar Gutenberg, shortcode,
+            // atribut tema, URL relatif) supaya hasil impor rapi dan URL media
+            // bisa dipetakan ke file di folder uploads.
+            $html = ringan_export_clean_html($html, ringan_export_clean_options($profile));
+            if ($html === '') {
+                return null;
+            }
             return $include_content_media
                 ? ringan_export_rewrite_content($html, $media, $profile, $warnings)
                 : $html;
@@ -584,11 +594,11 @@ function ringan_export_transform_value(
 
         case 'text':
         default:
-            $value = ringan_export_scalar_string($raw);
+            $value = ringan_export_clean_text(ringan_export_scalar_string($raw));
             if ($value === '') {
                 return null;
             }
-            return wp_strip_all_tags($value);
+            return $value;
     }
 }
 
@@ -658,6 +668,146 @@ function ringan_export_build_entry(WP_Post $post, array $profile, array &$media,
         'fields' => $fields,
         'terms' => $terms,
     ];
+}
+
+/**
+ * Referensi media yang diterima Import ZIP: `media/<nama>.<ekstensi>`.
+ */
+function ringan_export_media_ref_is_valid(mixed $ref): bool
+{
+    if (is_array($ref)) {
+        $ref = $ref['file'] ?? null;
+    }
+    if (!is_string($ref)) {
+        return false;
+    }
+    return (bool) preg_match(
+        '#^media/[A-Za-z0-9._-]{1,150}\.(?:jpg|jpeg|png|gif|webp|ico|pdf|txt|csv|zip|doc|docx|xls|xlsx|ppt|pptx)$#i',
+        trim($ref)
+    );
+}
+
+/**
+ * Pastikan nilai entry sesuai tipe field CMS.
+ *
+ * Import ZIP menolak seluruh arsip bila ada satu nilai yang tipenya salah, jadi
+ * pengecekan dilakukan di plugin: nilai yang tidak valid dibuang (dengan
+ * peringatan) alih-alih membuat ZIP gagal diimpor.
+ *
+ * @return array{entry:array<string,mixed>,errors:string[]}
+ */
+function ringan_export_sanitize_entry(array $entry, array $profile): array
+{
+    $errors = [];
+    $fields = is_array($entry['fields'] ?? null) ? $entry['fields'] : [];
+    $definitions = [];
+    foreach ((array) ($profile['fields'] ?? []) as $field) {
+        $key = (string) ($field['key'] ?? '');
+        if ($key !== '') {
+            $definitions[$key] = (string) ($field['type'] ?? 'text');
+        }
+    }
+
+    foreach ($fields as $key => $value) {
+        $key = (string) $key;
+        $type = $definitions[$key] ?? '';
+
+        switch ($type) {
+            case 'image':
+            case 'file':
+                if (!ringan_export_media_ref_is_valid($value)) {
+                    $errors[] = sprintf('Field "%s" berisi referensi media tidak valid dan dilewati.', $key);
+                    unset($fields[$key]);
+                }
+                break;
+
+            case 'gallery':
+                $items = is_array($value) ? array_values(array_filter($value, 'ringan_export_media_ref_is_valid')) : [];
+                if ($items === []) {
+                    $errors[] = sprintf('Field galeri "%s" tidak berisi media valid dan dilewati.', $key);
+                    unset($fields[$key]);
+                } else {
+                    $fields[$key] = $items;
+                }
+                break;
+
+            case 'richtext':
+            case 'textarea':
+            case 'text':
+                if (!is_string($value)) {
+                    $errors[] = sprintf('Field teks "%s" bukan string dan dilewati.', $key);
+                    unset($fields[$key]);
+                }
+                break;
+
+            case 'relation':
+                $ids = is_array($value) ? ($value['__relation_source_ids'] ?? null) : null;
+                if (!is_array($ids) || $ids === []) {
+                    $errors[] = sprintf('Field relasi "%s" tidak valid dan dilewati.', $key);
+                    unset($fields[$key]);
+                }
+                break;
+
+            case 'number':
+                if (!is_int($value) && !is_float($value) && !(is_string($value) && is_numeric($value))) {
+                    $errors[] = sprintf('Field angka "%s" bukan angka dan dilewati.', $key);
+                    unset($fields[$key]);
+                }
+                break;
+
+            case 'boolean':
+                if (!in_array($value, [0, 1, '0', '1', true, false], true)) {
+                    $errors[] = sprintf('Field boolean "%s" tidak valid dan dilewati.', $key);
+                    unset($fields[$key]);
+                }
+                break;
+
+            case 'date':
+                if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+                    $errors[] = sprintf('Field tanggal "%s" bukan format YYYY-MM-DD dan dilewati.', $key);
+                    unset($fields[$key]);
+                }
+                break;
+
+            case 'select':
+                if (!is_scalar($value)) {
+                    $errors[] = sprintf('Field pilihan "%s" tidak valid dan dilewati.', $key);
+                    unset($fields[$key]);
+                }
+                break;
+        }
+    }
+
+    $entry['fields'] = $fields;
+    return ['entry' => $entry, 'errors' => $errors];
+}
+
+/**
+ * Hitung berapa entry yang terisi untuk setiap field profil.
+ *
+ * @param array<int,array<string,mixed>> $entries
+ * @return array<string,array{filled:int,empty:int}>
+ */
+function ringan_export_field_stats(array $entries, array $profile): array
+{
+    $stats = [];
+    foreach ((array) ($profile['fields'] ?? []) as $field) {
+        $key = (string) ($field['key'] ?? '');
+        if ($key !== '') {
+            $stats[$key] = ['filled' => 0, 'empty' => 0];
+        }
+    }
+    foreach ($entries as $entry) {
+        $fields = is_array($entry['fields'] ?? null) ? $entry['fields'] : [];
+        foreach ($stats as $key => $unused) {
+            if (isset($fields[$key])) {
+                $stats[$key]['filled']++;
+            } else {
+                $stats[$key]['empty']++;
+            }
+        }
+    }
+    return $stats;
 }
 
 /* =========================================================================
@@ -771,6 +921,7 @@ function ringan_export_batch(string $token, int $user_id): array
     $warnings = (array) ($job['stats']['warnings'] ?? []);
     $stats = (array) ($job['stats'] ?? []);
     $stats['statuses'] = is_array($stats['statuses'] ?? null) ? $stats['statuses'] : [];
+    $stats['fields'] = is_array($stats['fields'] ?? null) ? $stats['fields'] : [];
 
     $batch_lines = [];
 
@@ -791,6 +942,18 @@ function ringan_export_batch(string $token, int $user_id): array
         $entry = ringan_export_build_entry($post, $profile, $media, $warnings);
         if ($entry === null) {
             continue;
+        }
+        // Cek tipe nilai sebelum ditulis: Import ZIP menolak seluruh arsip bila
+        // ada satu nilai yang tidak sesuai definisi field.
+        $sanitized = ringan_export_sanitize_entry($entry, $profile);
+        foreach (array_slice($sanitized['errors'], 0, 5) as $error) {
+            $warnings[] = 'Post #' . $post->ID . ': ' . $error;
+        }
+        $entry = $sanitized['entry'];
+        foreach (ringan_export_field_stats([$entry], $profile) as $key => $counts) {
+            // Gabungkan hitungan per field antar batch.
+            $stats['fields'][$key]['filled'] = (int) ($stats['fields'][$key]['filled'] ?? 0) + (int) $counts['filled'];
+            $stats['fields'][$key]['empty'] = (int) ($stats['fields'][$key]['empty'] ?? 0) + (int) $counts['empty'];
         }
         $line = wp_json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($line) || $line === '') {
@@ -833,6 +996,66 @@ function ringan_export_batch(string $token, int $user_id): array
         'offset' => $offset,
         'finished' => (bool) $job['finished'],
         'stats' => $stats,
+    ];
+}
+
+/**
+ * Pratinjau hasil pemetaan + pembersihan untuk beberapa post (tanpa menulis ZIP).
+ *
+ * @return array{ok:bool,error?:string,entries?:array,warnings?:string[],fields?:array,media?:int}
+ */
+function ringan_export_preview(array $profile, array $post_types, array $post_statuses, int $limit = 1): array
+{
+    $limit = max(1, min(5, $limit));
+    $post_types = array_values(array_filter(array_map('strval', $post_types)));
+    $post_statuses = array_values(array_filter(array_map('strval', $post_statuses)));
+    if ($post_types === []) {
+        return ['ok' => false, 'error' => 'Pilih minimal satu post type.'];
+    }
+    if ($post_statuses === []) {
+        $post_statuses = ['publish'];
+    }
+
+    $ids = get_posts([
+        'post_type' => $post_types,
+        'post_status' => $post_statuses,
+        'posts_per_page' => $limit,
+        'fields' => 'ids',
+        'orderby' => 'ID',
+        'order' => 'ASC',
+        'no_found_rows' => true,
+        'suppress_filters' => true,
+    ]);
+    $ids = array_values(array_map('intval', (array) $ids));
+    if ($ids === []) {
+        return ['ok' => false, 'error' => 'Tidak ada post yang cocok dengan post type/status tersebut.'];
+    }
+
+    $media = [];
+    $warnings = [];
+    $entries = [];
+    foreach ($ids as $id) {
+        $post = get_post($id);
+        if (!($post instanceof WP_Post)) {
+            continue;
+        }
+        $entry = ringan_export_build_entry($post, $profile, $media, $warnings);
+        if ($entry === null) {
+            continue;
+        }
+        $sanitized = ringan_export_sanitize_entry($entry, $profile);
+        foreach ($sanitized['errors'] as $error) {
+            $warnings[] = 'Post #' . $id . ': ' . $error;
+        }
+        $entries[] = $sanitized['entry'];
+    }
+
+    return [
+        'ok' => true,
+        'entries' => $entries,
+        'warnings' => array_slice(array_values(array_unique($warnings)), 0, 30),
+        'fields' => ringan_export_field_stats($entries, $profile),
+        'media' => count($media),
     ];
 }
 
